@@ -1,0 +1,131 @@
+//
+//  PhotoEditor.swift
+//  PhotoEditor
+//
+//  Created by Donquijote on 27/07/2021.
+//
+
+import Foundation
+import UIKit
+import Photos
+import SDWebImage
+import AVFoundation
+// import ZLImageEditor
+
+public enum ImageLoad: Error {
+    case failedToLoadImage(String)
+}
+
+var options: NSDictionary = NSDictionary.init()
+
+@objc(PhotoEditor)
+class PhotoEditor: NSObject, ZLEditImageControllerDelegate {
+    var window: UIWindow?
+    var bridge: RCTBridge!
+    
+    var resolve: RCTPromiseResolveBlock!
+    var reject: RCTPromiseRejectBlock!
+    
+    @objc(open:withResolver:withRejecter:)
+    func open(_options: NSDictionary, resolve:@escaping RCTPromiseResolveBlock,reject:@escaping RCTPromiseRejectBlock) -> Void {
+        options = _options
+        // handle path
+        guard let path = options["path"] as? String else {
+            reject("DONT_FIND_IMAGE", "Dont find image", nil)
+            return;
+        }
+        
+        getUIImage(url: path) { image in
+            DispatchQueue.main.async {
+                //  set config
+                self.setConfiguration(options: options, resolve: resolve, reject: reject)
+                self.presentController(image: image)
+            }
+        } reject: {_ in
+            reject("LOAD_IMAGE_FAILED", "Load image failed: " + path, nil)
+        }
+    }
+    
+    func onCancel() {
+        self.reject("USER_CANCELLED", "User has cancelled", nil)
+    }
+    
+    private func setConfiguration(options: NSDictionary, resolve:@escaping RCTPromiseResolveBlock,reject:@escaping RCTPromiseRejectBlock) -> Void{
+        self.resolve = resolve;
+        self.reject = reject;
+        let themeColor = UIColor.systemBlue
+        
+        // Stickers
+        let stickers = options["stickers"] as? [String] ?? []
+        ZLImageEditorConfiguration.default().imageStickerContainerView = StickerView(stickers: stickers)
+        //Config
+        ZLImageEditorConfiguration.default().editDoneBtnBgColor = themeColor
+        ZLImageEditorConfiguration.default().editDoneTitleColor = UIColor.white
+
+
+        ZLImageEditorConfiguration.default().editImageClipRatios = [.custom, .wh1x1, .wh4x3, .wh9x16, .wh16x9]
+        ZLImageEditorConfiguration.default().editImageTools = [.draw, .clip, .filter, .imageSticker, .textSticker, .mosaic]
+
+        //Filters Lut
+       /* do {
+            let filters = ColorCubeLoader()
+            ZLImageEditorConfiguration.default().filters = try filters.load()
+        } catch {
+            assertionFailure("\(error)")
+        }*/
+    }
+    
+    private func presentController(image: UIImage) {
+        if let controller = UIApplication.getTopViewController() {
+            ZLEditImageViewController.showEditImageVC(parentVC: controller , image: image, delegate: self) { [weak self] (resImage, editModel) in
+                let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0] as String
+                
+                let destinationPath = URL(fileURLWithPath: documentsPath).appendingPathComponent(String(Int64(Date().timeIntervalSince1970 * 1000)) + ".png")
+                do {
+                    try resImage.jpegData(compressionQuality: (options["quality"] != nil) ? options["quality"] as! CGFloat : 0.9)?.write(to: destinationPath)
+                  //  try resImage.pngData()?.write(to: destinationPath)
+                    self?.resolve(destinationPath.absoluteString)
+                } catch {
+                    debugPrint("writing file error", error)
+                }
+            }
+        }
+    }
+    
+    
+    private func getUIImage (url: String ,completion:@escaping (UIImage) -> (), reject:@escaping(String)->()){
+        if let path = URL(string: url) {
+            SDWebImageManager.shared.loadImage(with: path, options: .continueInBackground, progress: { (recieved, expected, nil) in
+            }, completed: { (downloadedImage, data, error, SDImageCacheType, true, imageUrlString) in
+                DispatchQueue.main.async {
+                    if(error != nil){
+                        print("error", error as Any)
+                        reject("false")
+                        return;
+                    }
+                    if downloadedImage != nil{
+                        completion(downloadedImage!)
+                    }
+                }
+            })
+        }else{
+            reject("false")
+        }
+    }
+    
+}
+
+extension UIApplication {
+    class func getTopViewController(base: UIViewController? = UIApplication.shared.keyWindow?.rootViewController) -> UIViewController? {
+        
+        if let nav = base as? UINavigationController {
+            return getTopViewController(base: nav.visibleViewController)
+        } else if let tab = base as? UITabBarController, let selected = tab.selectedViewController {
+            return getTopViewController(base: selected)
+        } else if let presented = base?.presentedViewController {
+            return getTopViewController(base: presented)
+        }
+        
+        return base
+    }
+}
